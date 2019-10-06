@@ -1,352 +1,219 @@
-//***************************************************************************
+// ---------------------------------------------------------------------------
+// Created by Florian Fida on 20/01/12
+// Copyright 2012 - Under creative commons license 3.0:
+//        Attribution-ShareAlike CC BY-SA
+//        http://creativecommons.org/licenses/by-sa/3.0/
 //
-//  File Name :		FastIO.h
+// This software is furnished "as is", without technical support, and with no
+// warranty, express or implied, as to its usefulness for any purpose.
+// ---------------------------------------------------------------------------
+// fio_shiftOut1 functions are based on Shif1 protocol developed by Roman Black 
+// (http://www.romanblack.com/shift1.htm)
 //
-//  Project :		FastIO library for the Atmel 8 bit AVR MCU
+// Thread Safe: No
+// Extendable: Yes
 //
-//  Purpose :		Fast access to the general purpose IO ports on
-//					Atmel 8 bit AVR MCUs
+// @file FastIO.h
+// This file implements basic fast IO routines.
+// 
+// @brief 
 //
-// The MIT License (MIT)
+// @version API 1.0.0
 //
-// Copyright (c) 2013-2015 Andy Burgess
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in all
-// copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-// SOFTWARE.
-//
-//  Revisions :
-//
-//      see rcs below
-//
-//***************************************************************************
+// @author Florian Fida -
+// 2012-03-16 bperrybap mods for chipkit32 (pic32) Arduino
+//  support chipkit:
+// (https://github.com/chipKIT32/chipKIT32-MAX/blob/master/hardware/pic32/
+//   cores/pic32/wiring_digital.c)
+// ---------------------------------------------------------------------------
+#ifndef _FAST_IO_H_
+#define _FAST_IO_H_
+
+#if (ARDUINO <  100)
+#include <WProgram.h>
+#else
+#include <Arduino.h>
+#endif
+
+#include <pins_arduino.h> // pleasing sanguino core
+#include <inttypes.h>
 
 
-#ifndef FASTIO_H_
-#define FASTIO_H_
+#define SKIP 0x23
+
+#if defined (__AVR__)
+#include <util/atomic.h> // for critical section management
+typedef uint8_t fio_bit;
+typedef volatile uint8_t *fio_register;
 
 
-#include "FastIOPorts.h"
-
-#include <avr/io.h>
-#include <util/atomic.h>
-
-
-typedef volatile uint8_t* port_t;
-const uint8_t NO_PIN = 255;
+#elif defined(__PIC32MX__)
+typedef uint32_t fio_bit;
+typedef volatile uint32_t *fio_register;
 
 
-// Some helper macros
-#define _readBit(value, bit) (((value) >> (bit)) & 0x01)
-#define _setBit(value, bit) ((value) |= _BV(bit))
-#define _clearBit(value, bit) ((value) &= ~_BV(bit))
-#define _writeBit(value, bit, bitvalue) (bitvalue ? _setBit(value, bit) : _clearBit(value, bit))
+#else
+// fallback to Arduino standard digital i/o routines
+#define FIO_FALLBACK
+#define ATOMIC_BLOCK(dummy) if(true)
+#define ATOMIC_RESTORESTATE
+typedef uint8_t fio_bit;
+typedef uint8_t fio_register;
+#endif
 
 
-//! \brief A class describing a single input pint
-//! \details Declare a object as follows:
-//! InputPin<5> button;
-template <uint8_t pin>
-class InputPin 
+
+#if !defined(FIO_FALLBACK) && !defined(ATOMIC_BLOCK)
+/*
+ * Define an ATOMIC_BLOCK that implements ATOMIC_FORCEON type
+ * Using the portable Arduino interrupts() and noInterrupts()
+ */
+#define ATOMIC_RESTORESTATE ATOMIC_FORCEON // sorry, no support for save/restore yet.
+#define ATOMIC_FORCEON uint8_t sreg_save \
+              __attribute__((__cleanup__(__iSeiParam))) = 0
+
+static __inline__ uint8_t __iCliRetVal(void)
 {
-public:
-	//! \brief Initialises a new instance of the InputPin class
-	//! \details The InputPin class is for use with a single input pin
-	//! and can optionally set pullups
-	//! \param pullup Set true to enable the pullup resistor
-	inline InputPin(bool pullup=true) __attribute__ ((always_inline))
-	{
-		_clearBit(*port_t(_pins<pin>::ddrx), _pins<pin>::bit);			// set as input
-		_writeBit(*port_t(_pins<pin>::portx), _pins<pin>::bit, pullup);	// set pullups
-	}
-	
-	//! \brief Gets the state of the input pin
-	//! \returns True if the pin is high; otherwise false
-	inline bool read() __attribute__ ((always_inline))
-	{
-		return _readBit(*port_t(_pins<pin>::pinx), _pins<pin>::bit);
-	}
-	
-	//! \brief Gets the state of the input pin
-	//! \details This operator overload performs the same as the read method
-	inline operator bool() __attribute__ ((always_inline)) 
-	{
-		return read();
-	}
-};
-
-
-//! \brief A class representing a single output pin
-//! \details Declare a object as follows:
-//! OutputPin<13> led;
-template <uint8_t pin>
-class OutputPin 
+	noInterrupts();
+	return(1);
+}
+static __inline__ void __iSeiParam(const uint8_t *__s)
 {
-	// An digital output with direct port I/O
-public:
-	//! \brief Initialises a new instance of the OutputPin object
-	//! \details Initialises a new output pin by setting
-	//! the data direction pin and writing the initial value
-	inline OutputPin(bool initValue=LOW) __attribute__ ((always_inline)) 
-	{
-		_setBit(*port_t(_pins<pin>::ddrx), _pins<pin>::bit);
-		write(initValue);
-	}
-	
+	interrupts();
+}
+#define ATOMIC_BLOCK(type) for(type,  __Todo = __iCliRetVal(); __Todo; __Todo = 0)
 
-	//! \brief Writes the boolean value to the output pin
-	//! \param value The value that should be written to the pin
-	inline void write(bool value) __attribute__ ((always_inline)) 
-	{
-		_writeBit(*port_t(_pins<pin>::portx), _pins<pin>::bit, value);
-	}
-	
-
-	//! \brief Sets the output pin - makes it high	
-	inline void set() __attribute__ ((always_inline)) 
-	{
-		_setBit(*port_t(_pins<pin>::portx), _pins<pin>::bit);
-	}
+#endif // end of block to create compatible ATOMIC_BLOCK()
 
 
-	//! \brief Clears the output pin - makes it low
-	inline void clear() __attribute__ ((always_inline)) 
-	{
-		_clearBit(*port_t(_pins<pin>::portx), _pins<pin>::bit);
-	}	
-	
-	
-	//! \brief An operator overload that performs the same as the write method
-	inline OutputPin& operator =(bool value)  __attribute__ ((always_inline)) 
-	{
-		write(value);
-		return *this;
-	}
-	
-	
-	//! \brief Toggle the output pin
-	//! \details Uses the PINx register to toggle the pin
-	inline void toggle() __attribute__ ((always_inline)) 
-	{
-		_setBit(*port_t(_pins<pin>::pinx), _pins<pin>::bit);
-	}
-	
 
-	//! \brief Reads the current value of the output pin
-	//! \returns The current value of the output pin, true if high; false if low
-	inline bool read() __attribute__ ((always_inline)) 
-	{
-		return _readBit(*port_t(_pins<pin>::pinx), _pins<pin>::bit);
-	}
-	
+/*!
+ @function
+ @abstract  Get the output register for specified pin.
+ @discussion if fast digital IO is disabled this function returns NULL
+ @param  pin[in] Number of a digital pin
+ @result  Register
+ */
+fio_register fio_pinToOutputRegister(uint8_t pin, uint8_t initial_state = LOW);
 
-	//! \brief Operator overload that performs the same as the read method	
-	inline operator bool()  __attribute__ ((always_inline)) 
-	{
-		return read();
-	}
-};
+/*!
+ @function
+ @abstract  Get the input register for specified pin.
+ @discussion if fast digital IO is disabled this function returns NULL
+ @param  pin[in] Number of a digital pin
+ @result  Register
+ */
+fio_register fio_pinToInputRegister(uint8_t pin);
+
+/*!
+ @function
+ @abstract Find the bit which belongs to specified pin
+ @discussion if fast digitalWrite is disabled this function returns the pin
+ @param pin[in] Number of a digital pin
+ @result Bit
+ */
+fio_bit fio_pinToBit(uint8_t pin);
 
 
-//! \brief Special case of the OutputPin class that is used for an
-//! optional pin that is not used
-//! \details A lot of the Arduino libs expect optional pins
-//! that are not used
-//! \param NO_PIN A constant representing no output pin
-template <>
-class OutputPin<NO_PIN> 
-{
-public:
-	//! \brief Inialises a new instance of the OutputPin class
-	//! \param initValue The initial value of the port pin
-	inline OutputPin(bool initValue=LOW) __attribute__ ((always_inline)) {}
+/*!
+ @method
+ @abstract direct digital write
+ @discussion without any checks
+ @discussion falls back to normal digitalWrite if fast io is disabled
+ @param pinRegister[in] Register - ignored if fast digital write is disabled
+ @param pinBit[in] Bit - Pin if fast digital write is disabled
+ @param value[in] desired output
+ */
+// __attribute__ ((always_inline)) /* let the optimizer decide that for now */
+void fio_digitalWrite ( fio_register pinRegister, fio_bit pinBit, uint8_t value );
 
-	//! \brief Writes a value to the output pin
-	//! \param value The value to write		
-	inline void write(bool value) __attribute__ ((always_inline)) {}
-	
-	//! \brief Sets the output pin - makes it high
-	inline void set() __attribute__ ((always_inline)) {}
+/**
+ * This is where the magic happens that makes things fast.
+ * Implemented as preprocessor directives to force inlining
+ * SWITCH is fast for FIO but probably slow for FIO_FALLBACK so SWITCHTO is recommended if the value is known.
+ */
 
+#ifndef FIO_FALLBACK
+#define fio_digitalWrite_LOW(reg,bit) *reg &= ~bit
+#define fio_digitalWrite_HIGH(reg,bit) *reg |= bit
+#define fio_digitalWrite_SWITCH(reg,bit) *reg ^= bit
+#define fio_digitalWrite_SWITCHTO(reg,bit,val) fio_digitalWrite_SWITCH(reg,bit)
+#else
+// reg -> dummy NULL, bit -> pin
+#define fio_digitalWrite_HIGH(reg,bit) digitalWrite(bit,HIGH)
+#define fio_digitalWrite_LOW(reg,bit) digitalWrite(bit,LOW)
+#define fio_digitalWrite_SWITCH(reg,bit) digitalWrite(bit, !digitalRead(bit))
+#define fio_digitalWrite_SWITCHTO(reg,bit,val) digitalWrite(bit,val);
+#endif
 
-	//! \brief Clears the output pin - makes it low
-	inline void clear() __attribute__ ((always_inline)) {}
-	
-	
-	//! \brief This operator overload performs the same as the write method
-	inline OutputPin& operator =(bool value) __attribute__ ((always_inline))
-	{
-		return *this;
-	}
+/*!
+ @function
+ @abstract direct digital read
+ @discussion without any checks
+ @discussion falls back to normal digitalRead if fast io is disabled
+ @param pinRegister[in] Register - ignored if fast io is disabled
+ @param pinBit[in] Bit - Pin if fast io is disabled
+ @result Value read from pin
+ */
+int fio_digitalRead ( fio_register pinRegister, fio_bit pinBit );
 
-	//! \brief Toggles the state of the output pin	
-	inline void toggle() __attribute__ ((always_inline)) {}
+/*!
+ @method
+ @abstract faster shift out
+ @discussion using fast digital write
+ @discussion falls back to normal digitalWrite if fastio is disabled
+ @param dataRegister[in] Register of data pin - ignored if fast digital write is disabled
+ @param dataBit[in] Bit of data pin - Pin if fast digital write is disabled
+ @param clockRegister[in] Register of data pin - ignored if fast digital write is disabled
+ @param clockBit[in] Bit of data pin - Pin if fast digital write is disabled
+ @param bitOrder[in] bit order
+ */
+void fio_shiftOut( fio_register dataRegister, fio_bit dataBit, fio_register clockRegister, 
+                  fio_bit clockBit, uint8_t value, uint8_t bitOrder );
 
-	//! \brief Returns the state of the output pin
-	//! \returns The state of the output pin		
-	inline bool read() __attribute__ ((always_inline)) 
-	{
-		return LOW;
-	}
-	
-	//! \brief An operator overload that performs the same as the read method
-	inline operator bool() __attribute__ ((always_inline))
-	{
-		return read();
-	}
-};
+/*!
+ @method
+ @abstract faster shift out clear
+ @discussion using fast digital write
+ @discussion falls back to normal digitalWrite if fastio is disabled
+ @param dataRegister[in] Register of data pin - ignored if fast digital write is disabled
+ @param dataBit[in] Bit of data pin - Pin if fast digital write is disabled
+ @param clockRegister[in] Register of data pin - ignored if fast digital write is disabled
+ @param clockBit[in] Bit of data pin - Pin if fast digital write is disabled
+ */
+void fio_shiftOut(fio_register dataRegister, fio_bit dataBit, fio_register clockRegister, fio_bit clockBit);
 
+/*!
+ * @method
+ * @abstract one wire shift out
+ * @discussion protocol needs initialisation (fio_shiftOut1_init)
+ * @param shift1Register[in] pins register
+ * @param shift1Bit[in] pins bit
+ * @param value[in] value to shift out, last byte is ignored and always shifted out LOW
+ */
+void fio_shiftOut1(fio_register shift1Register, fio_bit shift1Bit, uint8_t value, boolean noLatch = false);
+/*!
+ * @method
+ * @abstract one wire shift out
+ * @discussion protocol needs initialisation (fio_shiftOut1_init)
+ * @param pin[in] digital pin
+ * @param value[in] value to shift out, last byte is ignored and always shifted out LOW
+ */
+void fio_shiftOut1(uint8_t pin, uint8_t value, boolean noLatch = false);
+/*!
+ * @method
+ * @abstract initializes one wire shift out protocol
+ * @discussion Puts pin to HIGH state and delays until Capacitors are charged.
+ * @param shift1Register[in] pins register
+ * @param shift1Bit[in] pins bit
+ */
+void fio_shiftOut1_init(fio_register shift1Register, fio_bit shift1Bit);
+/*!
+ * @method
+ * @abstract initializes one wire shift out protocol
+ * @discussion Puts pin to HIGH state and delays until Capacitors are charged.
+ * @param pin[in] digital pin
+ */
+void fio_shiftOut1_init(uint8_t pin);
 
-//! \brief A class to represent one of more bits in an eight bit input port
-//! \brief The startBit and numBit parameters specify the starting order and
-//! number of bits.
-//! \note The bits are contiguous in the port
-template <class port, uint8_t startBit=0, uint8_t numBits=8>
-class InputPort
-{
-public:
-	//! \brief Initialises a new instance of the InputPort class
-	inline InputPort(bool pullup=true)  __attribute__ ((always_inline)) 
-	{
-		*port_t(port::ddrx) &= (~mask);			// set pins as input
-		*port_t(port::portx) &= (~mask);		// clear pullups
-		if (pullup)
-			*port_t(port::portx) |= mask;		// set pullups as necessary
-	}
-
-	//! \brief Reads the bits of the input port
-	//! \details The input port is read and a mask is applied before
-	//! shifting the bits right
-	//! \returns An uint8_t value representing the bits
-	inline uint8_t read() __attribute__ ((always_inline))
-	{
-		return (*port_t(port::pinx) & mask) >> startBit;
-	}
-	
-
-	//! \brief An operator overload that returns the input port
-	//! \details Performs the same as the read method
-	inline operator uint8_t() __attribute__ ((always_inline))
-	{
-		return read();
-	}
-
-private:
-	static const uint8_t mask = ((uint8_t(1) << numBits) - 1) << startBit;
-};
-
-
-//! \brief A class to represent one of more bits of an eight bit output port
-//! \brief The startBit and numBit parameters specify the starting order and
-//! number of bits.
-//! \note The bits are contiguous in the port
-template <class port, uint8_t startBit=0, uint8_t numBits=8>
-class OutputPort 
-{
-public:
-	//! \brief Initialises a new instance of the OutputPort class
-	inline OutputPort() __attribute__ ((always_inline))
-	{
-		ATOMIC_BLOCK(ATOMIC_RESTORESTATE) 
-		{
-			// set port pin directions to output
-			*port_t(port::ddrx) |= mask;
-		}
-	}
-
-	//! \brief Write the supplied value to the output port
-	inline void write(uint8_t value) __attribute__ ((always_inline))
-	{
-		ATOMIC_BLOCK(ATOMIC_RESTORESTATE) 
-		{
-			uint8_t v = *port_t(port::pinx);
-			uint8_t shifted = value << startBit;
-			v |= shifted & mask;
-			v &= (shifted | ~mask);
-			*port_t(port::portx) = v;
-		}
-	}
-	
-
-	//! \brief An operator overload that performs the same as the write method	
-	inline OutputPort& operator =(uint8_t value) __attribute__ ((always_inline))
-	{
-		write(value);
-		return *this;
-	}
-
-
-	//! \brief Returns the current value of the output port
-	inline uint8_t read() __attribute__ ((always_inline))
-	{
-		return (*port_t(port::pinx) & mask) >> startBit;
-	}
-
-
-	//! \brief An operator overload that performs the same as the read method
-	inline operator uint8_t() __attribute__ ((always_inline))
-	{
-		return read();
-	}
-
-private:
-	static const uint8_t mask = ((uint8_t(1) << numBits) - 1) << startBit;
-};
-
-
-//! \brief A special case for the output port where all 8 pins are used
-template <class port>
-class OutputPort<port, 0, 8> 
-{
-public:
-	//! \brief Initialises a new instance of the OutputPort object
-	inline OutputPort() __attribute__ ((always_inline))
-	{
-		// set port pin directions to output
-		*port_t(port::ddrx) = 0xFF;
-	}
-
-	//! \brief Sets the output pins to the value supplied
-	//! \param value The value to write to the port pins
-	inline void write(uint8_t value) __attribute__ ((always_inline))
-	{
-		*port_t(port::portx) = value;
-	}
-
-	//! \brief An operator overload than performs the same as the write method
-	inline OutputPort& operator =(uint8_t value) __attribute__ ((always_inline))
-	{
-		write(value);
-		return *this;
-	}
-
-	//! \brief Returns the value of the data port
-	//! \returns The value of the data port
-	inline uint8_t read() __attribute__ ((always_inline))
-	{
-		return *port_t(port::pinx);
-	}
-
-	//! \brief An operator overload that performs the same as the read method
-	inline operator uint8_t() __attribute__ ((always_inline))
-	{
-		return read();
-	}
-};
-
-
-#endif /* FASTIO_H_ */
+#endif // FAST_IO_H
